@@ -98,19 +98,28 @@ RTKLIB).
 ### 3. Files in this folder
 
 ```
-ppk_cli/
-├── ppk_pipeline.py        # the pipeline (run this)
-├── compare_pos.py         # helper: compares two .pos files (used for validation)
-├── compare_tags.py        # helper: compares two sets of tagged photos (testing only)
-├── configs/
-│   └── iter02.conf        # the validated processing recipe (config template)
-├── output/                # created on first run — all results land here
-└── README.md              # this file
+<repo root>/
+├── ppk_cli/
+│   ├── ppk_pipeline.py     # the pipeline (run this)
+│   ├── compare_pos.py      # helper: compares two .pos files (used for validation)
+│   ├── compare_tags.py     # helper: compares two sets of tagged photos (testing only)
+│   ├── configs/
+│   │   └── iter02.conf     # the validated processing recipe (config template)
+│   ├── output/             # created on first run — all results land here (git-ignored)
+│   └── README.md           # this file
+└── scripts/
+    └── parse_mrk.py        # DJI .MRK parser — imported by the pipeline
 ```
 
-The pipeline also imports `parse_mrk.py` from the sibling `../scripts/` folder
-(it reuses the `.MRK` parser from Task 1), so keep the two folders next to each
-other.
+**About the `scripts/` folder.** The pipeline's only dependency outside `ppk_cli/`
+is `scripts/parse_mrk.py` (it reuses the `.MRK` photo-mark parser). Keep the two
+folders side by side — `ppk_pipeline.py` adds `../scripts` to its import path at
+startup, so cloning the repo as-is just works.
+
+> **Why only one file is in `scripts/`:** this repo intentionally ships **only**
+> `parse_mrk.py`. In the original project the `scripts/` folder also held unrelated
+> tools (camera-intrinsics and 3D-reconstruction helpers from other tasks); the PPK
+> pipeline does **not** import any of them, so they're left out to keep the repo focused.
 
 ---
 
