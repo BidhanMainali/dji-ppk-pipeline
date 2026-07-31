@@ -1,0 +1,34 @@
+# ============================================================
+#  .gitignore — PPK pipeline repo
+#
+#  Strategy: ignore EVERYTHING at the top level, then explicitly
+#  allow only the two code folders. This guarantees personal
+#  drone data, base-station logs, Claude files, PDFs, etc. can
+#  never be committed by accident — nothing on disk is deleted,
+#  it's just excluded from git.
+# ============================================================
+
+# 1. Ignore everything at the repo root by default
+/*
+
+# 2. ...but keep the code and this file
+!/.gitignore
+!/ppk_cli/
+!/scripts/
+
+# 3. scripts/ : keep ONLY parse_mrk.py (the one file the pipeline imports)
+scripts/*
+!scripts/parse_mrk.py
+
+# 4. ppk_cli/ : drop generated output and comparison artifacts
+ppk_cli/output/
+ppk_cli/*.csv
+
+# 5. Never commit Python bytecode caches
+__pycache__/
+*.pyc
+
+# 6. Markdown: keep ONLY the pipeline README
+#    (excludes PHASE1_REPORT.md, ppk_optimization_log.md, MdFiles/, etc.)
+*.md
+!ppk_cli/README.md
