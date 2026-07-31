@@ -28,7 +28,9 @@ ppk_cli/*.csv
 __pycache__/
 *.pyc
 
-# 6. Markdown: keep ONLY the pipeline README
-#    (excludes PHASE1_REPORT.md, ppk_optimization_log.md, MdFiles/, etc.)
+# 6. Markdown: keep ONLY the two READMEs — the root landing page and the
+#    pipeline docs. (Excludes PHASE1_REPORT.md, ppk_optimization_log.md,
+#    MdFiles/, etc.) These negations come AFTER *.md so they win.
 *.md
+!/README.md
 !ppk_cli/README.md
