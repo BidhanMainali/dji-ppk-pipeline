@@ -60,6 +60,10 @@ scripts/
   [rtklibexplorer releases](https://github.com/rtklibexplorer/RTKLIB/releases) and set
   its path at the top of `ppk_cli/ppk_pipeline.py`.
 
+## Author
+
+**Bidhan Mainali** — [bidhanmainali@uvic.ca](mailto:bidhanmainali@uvic.ca)
+
 ## License
 
 See [LICENSE](LICENSE).
