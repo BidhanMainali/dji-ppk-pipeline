@@ -185,7 +185,10 @@ anything outside `output/`.
 
 ## Input: what each flight folder needs
 
-A DJI RTK flight folder straight off the drone. The pipeline looks for:
+A DJI RTK flight folder straight off the drone. **The pipeline targets DJI RTK
+*photogrammetry* drones that export their own RINEX** — see
+[Requirements & what won't work](#requirements--what-wont-work) below for the
+LiDAR / binary-GNSS limits. The pipeline looks for:
 
 | Pattern | What it is |
 |---|---|
@@ -203,6 +206,34 @@ And in the **base** folder (from Emlid Flow → export RINEX):
 
 If any of these is missing or ambiguous (e.g. two `.OBS` files), the pipeline
 **stops with a clear message** rather than guessing.
+
+### Requirements & what won't work
+
+The pipeline's one non-negotiable input is the **drone's own GNSS log, in RINEX
+form** — the rover `*_D.OBS` + `*_D.NAV` listed above. These are the *drone's*
+observations and must be **distinct from the base**. DJI RTK **photogrammetry**
+drones export exactly this (e.g. the M4TD reference flight: `_D.OBS/.NAV/.MRK` +
+`DJI_*_V.JPG`). If your data doesn't contain a genuine drone RINEX, the pipeline
+can't run — no amount of base data substitutes for it.
+
+**Not supported (and why):**
+
+| Data | Why it won't run | What to do instead |
+|---|---|---|
+| DJI **LiDAR payloads** (Zenmuse L1 / L2) | The drone GNSS is stored only in DJI binaries (`.RTB`, `.RTK`, `.RTL`, `.RPOS`) — there is **no `_D.OBS`**, and RTKLIB can't read those formats. | Export a RINEX observation from the raw payload in **DJI Terra** first, then run this pipeline — or geotag straight from the onboard `.MRK` positions. |
+| Dual-camera captures (`*_LV.JPG` / `*_RV.JPG`) | The pipeline pairs single `DJI_*_V.JPG` frames one-to-one with MRK events; stereo `_LV/_RV` naming isn't recognised. | Not currently handled. |
+| A "drone obs" that is really a **copy of the base** | Same receiver and static position as the base → the solve compares the base against itself and the result is meaningless. | See the trap below. |
+
+> **⚠️ The "base-copy" trap.** Make sure the file you pass as the drone `_D.OBS` is
+> *actually the drone's* — a moving rover — and **not a renamed copy of the base
+> station**. We hit exactly this: a flight folder held a `..._L.obs` that turned out
+> to be byte-for-byte identical to the base `.26O`. Quick checks:
+> - Its RINEX header `REC # / TYPE` and `APPROX POSITION XYZ` should **differ** from
+>   the base, and the position should **move** over the flight, not sit at one static point.
+> - If `md5sum drone.obs base.??O` returns the **same hash**, it's a copy — discard it.
+
+> **Time overlap.** The base log must span the flight's time window, or you'll get lots
+> of FLOAT/single epochs and a low FIX %. See [Troubleshooting](#troubleshooting).
 
 ---
 
