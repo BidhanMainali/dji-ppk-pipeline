@@ -57,8 +57,9 @@ scripts/
 
 - **Windows**, **Python 3.9+**, and the `piexif` package (`pip install piexif`).
 - **RTKLIB-EX** (`rnx2rtkp.exe`) — download from
-  [rtklibexplorer releases](https://github.com/rtklibexplorer/RTKLIB/releases) and set
-  its path at the top of `ppk_cli/ppk_pipeline.py`.
+  [rtklibexplorer releases](https://github.com/rtklibexplorer/RTKLIB/releases) (validated
+  on v2.5.1). Drop it in `ppk_cli/bin/`, add it to PATH, set `$RNX2RTKP`, or pass
+  `--rnx2rtkp` — the pipeline finds it automatically (no source editing).
 - **A drone that exports its own RINEX** (`_D.OBS` + `_D.NAV`) — i.e. DJI RTK
   *photogrammetry* drones. DJI **LiDAR** payloads (Zenmuse L1/L2) and any data whose
   GNSS is only in DJI binaries (`.RTB/.RTK/.RTL`) must be converted in **DJI Terra**

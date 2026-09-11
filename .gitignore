@@ -24,6 +24,11 @@ scripts/*
 ppk_cli/output/
 ppk_cli/*.csv
 
+# 4b. ppk_cli/bin/ : keep the drop-in note, never commit the solver binary
+#     (each machine supplies its own matching RTKLIB rnx2rtkp.exe)
+ppk_cli/bin/*
+!ppk_cli/bin/README.txt
+
 # 5. Never commit Python bytecode caches
 __pycache__/
 *.pyc
