@@ -86,11 +86,18 @@ RTKLIB).
    <https://github.com/rtklibexplorer/RTKLIB/releases>
    (validated on **v2.5.1**).
 2. Unzip it anywhere.
-3. Open `ppk_pipeline.py` and set the path near the top to your `rnx2rtkp.exe`:
+3. Tell the pipeline where `rnx2rtkp.exe` is — **no source editing needed.** It's
+   located automatically, checking these in order (first match wins):
 
-   ```python
-   RNX2RTKP = r"C:\ACIS\tools\RTKLIB_EX_2.5.1\RTKLIB_EX_2.5.1\rnx2rtkp.exe"
-   ```
+   | Option | How |
+   |---|---|
+   | **Drop-in folder** (easiest) | Put `rnx2rtkp.exe` in `ppk_cli/bin/`. |
+   | **PATH** | Add the folder containing `rnx2rtkp.exe` to your system PATH. |
+   | **Environment variable** | Set `RNX2RTKP` to the full path of `rnx2rtkp.exe`. |
+   | **CLI flag** | Pass `--rnx2rtkp "C:\path\to\rnx2rtkp.exe"` when you run. |
+
+   If none is found the pipeline stops and prints these options. It never scans your
+   disk — only those exact locations plus your PATH are checked.
 
 > **Pin your version.** Different RTKLIB builds can give different results.
 > Record which release you used so runs stay reproducible.
@@ -105,6 +112,7 @@ RTKLIB).
 │   ├── compare_tags.py     # helper: compares two sets of tagged photos (testing only)
 │   ├── configs/
 │   │   └── iter02.conf     # the validated processing recipe (config template)
+│   ├── bin/                # drop rnx2rtkp.exe here — auto-detected (git-ignored)
 │   ├── output/             # created on first run — all results land here (git-ignored)
 │   └── README.md           # this file
 └── scripts/
@@ -549,7 +557,7 @@ not a data problem**. Set `--tol-h`/`--tol-v` to whatever your team agrees on.
 
 | Symptom | Cause / fix |
 |---|---|
-| `rnx2rtkp not found at ...` | Set the `RNX2RTKP` path at the top of `ppk_pipeline.py` (see [setup](#requirements--setup)). |
+| `rnx2rtkp not found ...` | Solver missing from all known spots. Drop `rnx2rtkp.exe` in `ppk_cli/bin/`, add it to PATH, set `$RNX2RTKP`, or pass `--rnx2rtkp` (see [setup](#requirements--setup)). |
 | `expected exactly one base obs (.yyO) ... found 0` | Wrong `--base` folder, or the RINEX export didn't include obs/nav. |
 | `expected exactly one rover OBS ... found 2` | Two flights merged in one folder — split them, one flight per folder. |
 | All positions ~2 m off vertically | Base antenna height wrong — check `ANTENNA: DELTA H` in the base RINEX header and the `RS4_APC_L1_M` constant. |

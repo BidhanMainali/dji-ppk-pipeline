@@ -35,7 +35,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from compare_pos import parse_pos, QNAME          # noqa: E402  (same dir)
 from parse_mrk import parse_mrk_file              # noqa: E402  (scripts dir)
 
-RNX2RTKP = r"C:\ACIS\tools\RTKLIB_EX_2.5.1\RTKLIB_EX_2.5.1\rnx2rtkp.exe"
+# Last-resort fallback path (this machine's install). Users normally don't touch
+# this — the solver is located automatically by _find_rnx2rtkp() (see below).
+RNX2RTKP_DEFAULT = r"C:\ACIS\tools\RTKLIB_EX_2.5.1\RTKLIB_EX_2.5.1\rnx2rtkp.exe"
+RNX2RTKP = None   # resolved at runtime in main() -> _find_rnx2rtkp()
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "iter02.conf")
 OUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 RS4_APC_L1_M = 0.095   # Emlid RS4 L1 phase-center offset (Emlid spec)
@@ -49,6 +52,41 @@ def fail(msg):
     designed to STOP LOUDLY rather than silently produce a wrong position."""
     print(f"\n!! {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def _find_rnx2rtkp(cli_path=None):
+    """Locate the rnx2rtkp solver by checking a short, FIXED list of exact places —
+    it never scans or walks the disk.
+
+    Checked in order, first hit wins:
+      1. --rnx2rtkp <path>        (explicit CLI override)
+      2. $RNX2RTKP                (environment variable)
+      3. rnx2rtkp on the PATH     (shutil.which -> only the folders already on PATH,
+                                    exactly like typing the command in a terminal)
+      4. ppk_cli/bin/rnx2rtkp     (drop the exe here for zero setup)
+      5. RNX2RTKP_DEFAULT         (this machine's built-in fallback path)
+
+    Fails loudly with the four supply options if none of them exist."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    exe = "rnx2rtkp.exe" if os.name == "nt" else "rnx2rtkp"
+    candidates = [
+        cli_path,                              # 1. --rnx2rtkp
+        os.environ.get("RNX2RTKP"),            # 2. env var
+        shutil.which("rnx2rtkp"),              # 3. on PATH (PATH dirs only, not a scan)
+        os.path.join(here, "bin", exe),        # 4. ppk_cli/bin/
+        RNX2RTKP_DEFAULT,                      # 5. built-in fallback
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    fail(
+        "rnx2rtkp not found. Provide it in any ONE of these ways:\n"
+        "  - drop rnx2rtkp.exe into ppk_cli/bin/, or\n"
+        "  - add its folder to your PATH, or\n"
+        "  - set the RNX2RTKP environment variable to its full path, or\n"
+        "  - pass --rnx2rtkp <path> on the command line.\n"
+        "  Download RTKLIB-EX v2.5.1: https://github.com/rtklibexplorer/RTKLIB/releases"
+    )
 
 
 # ---------------------------------------------------------------- 1. discover
@@ -422,10 +460,14 @@ def main():
     ap.add_argument("--base", required=True, help="folder with base RINEX (.yyO/.yyP)")
     ap.add_argument("--min-fix", type=float, default=95.0,
                     help="warn if solution FIX%% is below this (default 95)")
+    ap.add_argument("--rnx2rtkp", default=None,
+                    help="path to rnx2rtkp.exe (else: $RNX2RTKP, PATH, ppk_cli/bin/, "
+                         "or the built-in default)")
     args = ap.parse_args()
 
-    if not os.path.exists(RNX2RTKP):
-        fail(f"rnx2rtkp not found at {RNX2RTKP}")
+    global RNX2RTKP
+    RNX2RTKP = _find_rnx2rtkp(args.rnx2rtkp)
+    print(f"solver   : {RNX2RTKP}")
     results = [run_flight(i, len(args.flights), fl, args.base, args.min_fix)
                for i, fl in enumerate(args.flights, 1)]
 
