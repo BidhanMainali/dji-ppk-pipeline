@@ -29,6 +29,11 @@ ppk_cli/*.csv
 ppk_cli/bin/*
 !ppk_cli/bin/README.txt
 
+# 4c. Claude Code / ECC plugin files — already excluded by the /* rule above;
+#     listed explicitly for visibility. Never commit local agent/skill/plugin config.
+.claude/
+.claude-plugin/
+
 # 5. Never commit Python bytecode caches
 __pycache__/
 *.pyc

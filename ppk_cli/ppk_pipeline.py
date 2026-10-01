@@ -34,6 +34,7 @@ from fractions import Fraction
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from compare_pos import parse_pos, QNAME          # noqa: E402  (same dir)
 from parse_mrk import parse_mrk_file              # noqa: E402  (scripts dir)
+from csrs import parse_sum, parse_latlon, read_delta_h  # noqa: E402  (same dir)
 
 # Last-resort fallback path (this machine's install). Users normally don't touch
 # this — the solver is located automatically by _find_rnx2rtkp() (see below).
@@ -125,25 +126,76 @@ def discover(flight_dir, base_dir):
 
 # ------------------------------------------------------------ 2. build_config
 
-def build_config(base_obs, out_conf):
-    """Copy the validated template, setting ant2-antdelu = pole height from the
-    base RINEX 'ANTENNA: DELTA H/E/N' + the RS4 L1 phase-center offset."""
-    delta_h = None
+def _llh_to_ecef(lat, lon, h):
+    """WGS84 geographic (deg, deg, m) -> ECEF (X, Y, Z) metres."""
+    import math
+    a, f = 6378137.0, 1 / 298.257223563
+    e2 = f * (2 - f)
+    la, lo = math.radians(lat), math.radians(lon)
+    n = a / math.sqrt(1 - e2 * math.sin(la) ** 2)
+    return ((n + h) * math.cos(la) * math.cos(lo),
+            (n + h) * math.cos(la) * math.sin(lo),
+            (n * (1 - e2) + h) * math.sin(la))
+
+
+def _rinex_approx_xyz(base_obs):
+    """Read 'APPROX POSITION XYZ' (ECEF metres) from a RINEX header, or None."""
     with open(base_obs, errors="replace") as f:
         for line in f:
-            if line[60:].strip() == "ANTENNA: DELTA H/E/N":
-                delta_h = float(line[:14])
+            if line[60:].strip() == "APPROX POSITION XYZ":
+                return tuple(float(line[i:i + 14]) for i in (0, 14, 28))
             if line[60:].strip() == "END OF HEADER":
                 break
-    if delta_h is None:
-        fail(f"no 'ANTENNA: DELTA H/E/N' in {base_obs} — cannot set base antenna height")
+    return None
+
+
+def _check_base_pos(base_pos, base_obs):
+    """Cross-check a base override against the RINEX-header position. A few metres
+    is expected (antenna height + the CSRS correction); a large gap means a typo
+    or the wrong datum. Warn > 5 m, hard-fail > 100 m."""
+    import math
+    approx = _rinex_approx_xyz(base_obs)
+    if not approx:
+        return  # header has no approx position — nothing to compare against
+    d = math.dist(_llh_to_ecef(*base_pos), approx)
+    if d > 100:
+        fail(f"base override is {d:.1f} m from the RINEX-header position - almost "
+             "certainly a typo or the wrong datum. Refusing to run.")
+    if d > 5:
+        print(f"  !! base override is {d:.1f} m from the RINEX-header position - "
+              "expected a few m (antenna height + CSRS correction); double-check it.")
+
+
+def build_config(base_obs, out_conf, base_pos=None):
+    """Copy the validated template, setting ant2-antdelu from the base RINEX
+    'ANTENNA: DELTA H/E/N' + the RS4 L1 phase-center offset.
+
+    If base_pos=(lat, lon, ellh) is given — a CSRS-corrected GROUND MARKER —
+    also override the base position: switch ant2-postype to 'llh' and append
+    ant2-pos1/2/3. antdelu is left unchanged, so it still lifts the marker up to
+    the antenna; feed the MARKER here, never the ARP, or the antenna height would
+    be counted twice. Without base_pos, behaviour is identical to before
+    (ant2-postype stays 'rinexhead')."""
+    try:
+        delta_h = read_delta_h(base_obs)
+    except ValueError as e:
+        fail(f"{e} - cannot set base antenna height")
     antdelu = delta_h + RS4_APC_L1_M
+    if base_pos:
+        _check_base_pos(base_pos, base_obs)
 
     out = []
     for line in open(TEMPLATE):
         if line.startswith("ant2-antdelu"):
             line = f"ant2-antdelu       ={antdelu:.4f}   # {delta_h} pole + {RS4_APC_L1_M} RS4 L1 APC\n"
+        elif base_pos and line.startswith("ant2-postype"):
+            line = "ant2-postype       =llh        # overridden with the CSRS-corrected base marker\n"
         out.append(line)
+    if base_pos:
+        lat, lon, ellh = base_pos
+        out.append(f"ant2-pos1          ={lat:.9f}    # base marker latitude (CSRS-PPP)\n")
+        out.append(f"ant2-pos2          ={lon:.9f}   # base marker longitude (CSRS-PPP)\n")
+        out.append(f"ant2-pos3          ={ellh:.4f}       # base marker ellipsoidal height (CSRS-PPP)\n")
     with open(out_conf, "w") as f:
         f.writelines(out)
     return antdelu
@@ -393,7 +445,7 @@ def tag_photos(events, mrk_records, jpg_by_id, tagged_dir, csv_path):
 
 # ------------------------------------------------------------------- 7. main
 
-def run_flight(idx, total, flight_dir, base_dir, min_fix):
+def run_flight(idx, total, flight_dir, base_dir, min_fix, base_pos=None):
     """Run all six stages for one flight and return a summary-row dict.
 
     Ties the pipeline together: discover -> build_config -> inject_events ->
@@ -405,8 +457,11 @@ def run_flight(idx, total, flight_dir, base_dir, min_fix):
     os.makedirs(out_dir, exist_ok=True)
 
     conf = os.path.join(out_dir, "flight.conf")
-    antdelu = build_config(files["base_obs"], conf)
+    antdelu = build_config(files["base_obs"], conf, base_pos)
     print(f"  config   : base antenna height {antdelu:.3f} m -> flight.conf")
+    if base_pos:
+        print(f"  base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
+              "(CSRS-PPP override)")
 
     mrk_records = parse_mrk_file(files["mrk"])
     obs_ev = os.path.join(out_dir, "rover_events.obs")
@@ -419,6 +474,10 @@ def run_flight(idx, total, flight_dir, base_dir, min_fix):
     events, fix_pct, ev_fix_pct = report(
         out_pos, os.path.join(out_dir, "solution_events.pos"),
         len(mrk_records), os.path.join(out_dir, "report.txt"))
+    if base_pos:
+        with open(os.path.join(out_dir, "report.txt"), "a") as f:
+            f.write(f"\nBase position OVERRIDE (CSRS-PPP marker): "
+                    f"{base_pos[0]:.9f}, {base_pos[1]:.9f}, {base_pos[2]:.4f} m\n")
 
     tagged_dir = os.path.join(out_dir, "tagged")
     n_tag = tag_photos(events, mrk_records, files["jpg_by_id"], tagged_dir,
@@ -463,12 +522,31 @@ def main():
     ap.add_argument("--rnx2rtkp", default=None,
                     help="path to rnx2rtkp.exe (else: $RNX2RTKP, PATH, ppk_cli/bin/, "
                          "or the built-in default)")
+    ap.add_argument("--csrs", help="CSRS-PPP .sum report -> override the base position")
+    ap.add_argument("--base-pos", nargs=3, metavar=("LAT", "LON", "ELLH"),
+                    help="override the base position (CSRS marker; DMS or decimal "
+                         "lat/lon, ellh in m). Takes precedence over --csrs.")
     args = ap.parse_args()
+
+    # Optional CSRS-PPP base-position override (the ground marker). Feeds
+    # build_config, which writes ant2-postype=llh + ant2-pos1/2/3. Without any of
+    # these flags, behaviour is identical to before (ant2-postype=rinexhead).
+    base_pos = None
+    if args.base_pos:
+        base_pos = (parse_latlon(args.base_pos[0]), parse_latlon(args.base_pos[1]),
+                    float(args.base_pos[2]))
+        print(f"base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
+              "(manual override)")
+    elif args.csrs:
+        r = parse_sum(args.csrs)
+        base_pos = (r.lat, r.lon, r.ellh)
+        print(f"base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
+              f"(CSRS-PPP {r.datum} {r.epoch or ''})")
 
     global RNX2RTKP
     RNX2RTKP = _find_rnx2rtkp(args.rnx2rtkp)
     print(f"solver   : {RNX2RTKP}")
-    results = [run_flight(i, len(args.flights), fl, args.base, args.min_fix)
+    results = [run_flight(i, len(args.flights), fl, args.base, args.min_fix, base_pos)
                for i, fl in enumerate(args.flights, 1)]
 
     print("\n" + "=" * 72)
