@@ -21,6 +21,8 @@ Given an Emlid Flow GCP CSV, the base RINEX, and a CSRS-PPP result, this tool:
 Usage:
   python gcp_shift.py --gcp <emlid.csv> --base <baseRINEXfolder|.yyO> \\
       (--csrs <report.sum> | --csrs-pos <lat> <lon> <ellh>) [--out gcp_corrected.csv]
+  python gcp_shift.py clean [path]      delete a previously written corrected
+                                        CSV (default: ./gcp_corrected.csv)
 
 Notes: --csrs-pos lat/lon accept DMS (quote them, e.g. "49 56 38.8") or decimal.
 """
@@ -38,6 +40,7 @@ from csrs import parse_latlon, parse_sum, read_delta_h
 COL_LON, COL_LAT, COL_H = "Longitude", "Latitude", "Ellipsoidal height"
 COL_BLON, COL_BLAT, COL_BH = "Base longitude", "Base latitude", "Base ellipsoidal height"
 COL_CS = "CS name"
+DEFAULT_OUT = "gcp_corrected.csv"
 
 
 def fail(msg):
@@ -119,7 +122,24 @@ def fix_csv(rows, fieldnames, shift, out_path):
     return n
 
 
+def clean(target=None):
+    """Delete a previously written corrected-GCP CSV (it's fully regenerable
+    from --gcp/--base/--csrs). With no argument, deletes ./gcp_corrected.csv
+    (the default --out); with a path, deletes that file instead."""
+    path = target or DEFAULT_OUT
+    if not os.path.isfile(path):
+        print(f"{path} already gone - nothing to clean")
+        return
+    os.remove(path)
+    print(f"deleted {path}")
+
+
 def main():
+    # `python gcp_shift.py clean [path]` -> delete the corrected CSV and stop
+    if len(sys.argv) > 1 and sys.argv[1] == "clean":
+        clean(sys.argv[2] if len(sys.argv) > 2 else None)
+        return
+
     ap = argparse.ArgumentParser(description="Automate the CSRS-PPP GCP shift")
     ap.add_argument("--gcp", required=True, help="Emlid Flow GCP CSV export")
     ap.add_argument("--base", required=True, help="base RINEX folder or .yyO file")
@@ -128,7 +148,7 @@ def main():
                     help="manual CSRS estimate (DMS or decimal lat/lon, ellh in m)")
     ap.add_argument("--base-pos", nargs=3, metavar=("LAT", "LON", "ELLH"),
                     help="override the original base position (else read from the CSV)")
-    ap.add_argument("--out", default="gcp_corrected.csv", help="output CSV path")
+    ap.add_argument("--out", default=DEFAULT_OUT, help="output CSV path")
     args = ap.parse_args()
 
     if not args.csrs and not args.csrs_pos:
