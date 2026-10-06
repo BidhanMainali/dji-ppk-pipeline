@@ -10,11 +10,11 @@ RINEX against precise orbit/clock products and reports an accurate "Estimated
 Position" in ITRF2020. Feeding that position back into processing removes the
 ~1 m bias a short Emlid on-device average can carry.
 
-IMPORTANT: parse_sum() is written against the CSRS report layout seen in the
-sample PDF. The exact `.sum` text format has NOT been validated against a real
-file yet - verify before production. `--csrs-pos` is the manual fallback, and
-callers cross-check the parsed position against the RINEX header, so a mis-parse
-is caught rather than silently trusted.
+parse_sum() reads the "POS LAT/LON/HGT <frame> <epoch> ..." lines of the .sum
+report - validated against a real NRCan CSRS-PPP report (reference frame
+"IGc20"). `--csrs-pos` is the manual fallback, and callers cross-check the
+parsed position against the RINEX header, so a mis-parse is caught rather than
+silently trusted.
 """
 
 import re
@@ -84,8 +84,8 @@ class CSRSResult:
         self.lat = lat            # signed decimal degrees
         self.lon = lon            # signed decimal degrees
         self.ellh = ellh          # ellipsoidal height, metres (the marker)
-        self.datum = datum        # e.g. "ITRF2020"
-        self.epoch = epoch        # e.g. "2026.7"
+        self.datum = datum        # e.g. "ITRF2020" or "IGc20"
+        self.epoch = epoch        # e.g. "26:240:83070" (yy:ddd:sssss, as printed)
         self.sigmas = sigmas      # (s_lat, s_lon, s_h) metres, or None
 
     def __repr__(self):
@@ -94,52 +94,68 @@ class CSRSResult:
 
 
 def parse_sum(path):
-    """Parse a CSRS-PPP `.sum` report into a CSRSResult (estimated ITRF position).
+    """Parse a CSRS-PPP `.sum` report into a CSRSResult (estimated global position).
 
-    !! INFERRED FORMAT - validate against a real `.sum` before trusting it. !!
+    Reads the "POS LAT/LON/HGT <frame> <epoch> <a priori> <estimated> <diff> ..."
+    lines NRCan's CSRS-PPP report prints for the GLOBAL (ITRS-aligned) solution,
+    e.g. (real report, reference frame "IGc20"):
 
-    Strategy: require an ITRF datum tag (rejects a NAD83 run), then locate the
-    estimated LAT / LON / HGT lines. Fails loudly if anything can't be found so a
+        POS LAT IGc20 26:240:83070    49 56 36.91448    49 56 36.82477   -2.7717 ...
+        POS LON IGc20 26:240:83070  -127 13 27.66091  -127 13 27.65521    0.1137 ...
+        POS HGT IGc20 26:240:83070           22.1232           16.3044   -5.8188 ...
+
+    LAT/LON values are a-priori-then-estimated DMS triples; HGT is a-priori-then-
+    estimated single decimal numbers. The reference frame tag varies by report
+    vintage - older runs say "ITRFxxxx", current ones say "IGb.."/"IGc.." (an IGS
+    realization of ITRF) - both are ITRS-aligned geocentric frames so either is
+    accepted; a "NAD83(CSRS)" run (Canada-fixed, not ITRS-aligned) is rejected.
+
+    Fails loudly if the POS LAT/LON/HGT lines aren't found or don't parse, so a
     bad parse never masquerades as a good position - use --csrs-pos instead.
     Callers additionally cross-check the result against the RINEX-header position.
     """
     text = open(path, errors="replace").read()
 
-    # datum + optional epoch, e.g. "ITRF2020/IGc20 (2026.7)"
-    dm = re.search(r"(ITRF\d{2,4})[^\n(]*(?:\(\s*(\d{4}\.\d+)\s*\))?", text)
-    if not dm:
-        raise ValueError(
-            f"{path}: no ITRF datum found. The pipeline needs the ITRF2020 run "
-            "(not NAD83). If this really is the right file, use --csrs-pos to "
-            "enter the position manually.")
-    datum, epoch = dm.group(1), dm.group(2)
+    def _pos_line(label):
+        return re.search(rf"^POS\s+{label}\s+(\S+)\s+(\S+)\s+(.*)$", text, re.M)
 
-    def _line_with(label):
-        m = re.search(rf"^[^\n]*\b{label}\b[^\n]*$", text, re.I | re.M)
-        return m.group(0) if m else None
-
-    lat_line = _line_with("LAT")
-    lon_line = _line_with("LON")
-    hgt_line = _line_with("HGT") or _line_with("Ell")
-    if not (lat_line and lon_line and hgt_line):
+    lat_m, lon_m, hgt_m = _pos_line("LAT"), _pos_line("LON"), _pos_line("HGT")
+    if not (lat_m and lon_m and hgt_m):
         raise ValueError(
-            f"{path}: could not locate the estimated LAT/LON/HGT lines. The .sum "
-            "layout may differ from what was expected - verify the file, or use "
+            f"{path}: could not find 'POS LAT/LON/HGT' lines - this doesn't look "
+            "like a CSRS-PPP .sum report. Use --csrs-pos to enter the position "
+            "manually.")
+
+    datum, epoch = lat_m.group(1), lat_m.group(2)
+    if "NAD83" in datum.upper():
+        raise ValueError(
+            f"{path}: position is in {datum} (NAD83(CSRS), a Canada-fixed datum), "
+            "not a global ITRS frame (ITRFxxxx / IGb.. / IGc..). The pipeline "
+            "needs the GLOBAL solution. If this really is the right file, use "
             "--csrs-pos to enter the position manually.")
 
-    try:
-        lat = parse_latlon(lat_line.split(None, 1)[1])
-        lon = parse_latlon(lon_line.split(None, 1)[1])
-    except (IndexError, ValueError) as e:
-        raise ValueError(
-            f"{path}: found LAT/LON lines but could not parse them ({e}). "
-            "Use --csrs-pos to enter the position manually.") from e
+    def _dms_estimated(rest, label):
+        # rest: "<apriori deg min sec>   <estimated deg min sec>   <diff> ..."
+        toks = rest.split()
+        if len(toks) < 6:
+            raise ValueError(f"expected a-priori + estimated {label} DMS, got {rest!r}")
+        return " ".join(toks[3:6])
 
-    hm = re.search(r"[-+]?\d+\.\d+", hgt_line)
-    if not hm:
+    def _scalar_estimated(rest, label):
+        # rest: "<apriori>   <estimated>   <diff> ..."
+        toks = rest.split()
+        if len(toks) < 2:
+            raise ValueError(f"expected a-priori + estimated {label}, got {rest!r}")
+        return toks[1]
+
+    try:
+        lat = parse_latlon(_dms_estimated(lat_m.group(3), "LAT"))
+        lon = parse_latlon(_dms_estimated(lon_m.group(3), "LON"))
+        ellh = float(_scalar_estimated(hgt_m.group(3), "HGT"))
+    except (ValueError, IndexError) as e:
         raise ValueError(
-            f"{path}: no numeric height in the estimated height line: "
-            f"{hgt_line!r}. Use --csrs-pos to enter the position manually.")
-    ellh = float(hm.group(0))
+            f"{path}: found POS LAT/LON/HGT lines but could not parse the "
+            f"estimated position ({e}). Use --csrs-pos to enter the position "
+            "manually.") from e
 
     return CSRSResult(lat, lon, ellh, datum=datum, epoch=epoch)
