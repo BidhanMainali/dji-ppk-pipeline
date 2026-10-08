@@ -65,17 +65,44 @@ def find_base_obs(base):
     return hits[0]
 
 
+def _finite(text):
+    """float(text) if it is a real, finite number, else None (blank, words, nan,
+    inf and comma decimals like '48,456' all return None)."""
+    try:
+        v = float(text)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
 def read_base_pos_from_csv(rows):
-    """Read the original base position (blat, blon, bh) from the first data row
-    that carries the 'Base ...' columns. These are decimal degrees / metres."""
-    for r in rows:
-        try:
-            blat = float(r[COL_BLAT]); blon = float(r[COL_BLON]); bh = float(r[COL_BH])
-        except (KeyError, ValueError, TypeError):
-            continue
-        return blat, blon, bh
-    fail(f"no usable '{COL_BLAT}'/'{COL_BLON}'/'{COL_BH}' values in the GCP CSV "
-         "(needed as the original base position). Provide --base-pos instead.")
+    """Read the original base position (blat, blon, bh) from the 'Base ...'
+    columns. Every row that has them must agree (to ~1 mm) - a CSV that mixes
+    bases from different sessions would otherwise be shifted by the wrong vector
+    without any warning. Decimal degrees / metres."""
+    found = []
+    for i, r in enumerate(rows, start=2):                     # row 1 is the header
+        vals = [_finite(r.get(c)) for c in (COL_BLAT, COL_BLON, COL_BH)]
+        if all(v is None for v in vals):
+            continue                                          # row carries no base info
+        if any(v is None for v in vals):
+            fail(f"GCP CSV row {i}: incomplete or non-numeric base position "
+                 f"{[r.get(c) for c in (COL_BLAT, COL_BLON, COL_BH)]}")
+        found.append((i, tuple(vals)))
+    if not found:
+        fail(f"no usable '{COL_BLAT}'/'{COL_BLON}'/'{COL_BH}' values in the GCP CSV "
+             "(needed as the original base position). Provide --base-pos instead.")
+
+    first_row, base = found[0]
+    if abs(base[0]) > 90 or abs(base[1]) > 180:
+        fail(f"GCP CSV row {first_row}: base position {base} is out of range")
+    for i, other in found[1:]:
+        if (abs(other[0] - base[0]) > 1e-8 or abs(other[1] - base[1]) > 1e-8
+                or abs(other[2] - base[2]) > 0.001):
+            fail(f"GCP CSV rows {first_row} and {i} have different base positions "
+                 f"({base} vs {other}). Split the export by base session, or give "
+                 "--base-pos explicitly.")
+    return base
 
 
 def compute_shift(base_pos, csrs_pos, dh):
@@ -109,14 +136,39 @@ def fix_csv(rows, fieldnames, shift, out_path):
         if col not in fieldnames:
             fail(f"column '{col}' not found - is this the Emlid Flow GCP CSV export? "
                  f"(found columns: {', '.join(fieldnames)})")
+    if not rows:
+        fail("the GCP CSV has no data rows - nothing to correct")
+
+    # Validate EVERY row before writing anything: a single unshifted GCP left among
+    # shifted ones would make a mixed-frame set that looks perfectly valid.
+    coords = []
+    skipped = 0
+    for i, r in enumerate(rows, start=2):                     # row 1 is the header
+        raw = [r.get(c) for c in (COL_LON, COL_LAT, COL_H)]
+        if all(not (v or "").strip() for v in raw):
+            coords.append(None)                               # e.g. a notes-only row
+            skipped += 1
+            continue
+        vals = [_finite(v) for v in raw]
+        if any(v is None for v in vals):
+            fail(f"GCP CSV row {i} ({r.get('Name', '?')}): non-numeric or missing "
+                 f"coordinate {raw} - fix the export (no output written)")
+        coords.append(vals)
+    if skipped == len(rows):
+        fail("no GCP rows with coordinates in the CSV - nothing to correct")
+
     n = 0
-    for r in rows:
-        try:
-            r[COL_LON] = f"{float(r[COL_LON]) + shift['dlon']:.8f}"
-            r[COL_LAT] = f"{float(r[COL_LAT]) + shift['dlat']:.8f}"
-            r[COL_H] = f"{float(r[COL_H]) + shift['du']:.3f}"
-        except (ValueError, TypeError):
-            continue  # leave non-numeric rows (e.g. notes) untouched
+    for r, vals in zip(rows, coords):
+        for col in fieldnames:                                # neutralise Excel formulas
+            if col not in (COL_LON, COL_LAT, COL_H) and isinstance(r.get(col), str) \
+                    and r[col][:1] in ("=", "+", "-", "@", "\t", "\r") and _finite(r[col]) is None:
+                r[col] = "'" + r[col]
+        if vals is None:
+            continue
+        lon, lat, h = vals
+        r[COL_LON] = f"{lon + shift['dlon']:.8f}"
+        r[COL_LAT] = f"{lat + shift['dlat']:.8f}"
+        r[COL_H] = f"{h + shift['du']:.3f}"
         if COL_BLON in fieldnames:
             r[COL_BLON] = f"{shift['plon']:.8f}"
         if COL_BLAT in fieldnames:
@@ -141,6 +193,11 @@ def clean(target=None):
     if not os.path.isfile(path):
         print(f"{path} already gone - nothing to clean")
         return
+    # only ever delete this tool's own output - never, say, the original Emlid export
+    name = os.path.basename(path).lower()
+    if not (name.startswith("gcp_corrected") and name.endswith(".csv")) or os.path.islink(path):
+        fail(f"refusing to delete {path}: clean only removes gcp_corrected*.csv files "
+             "written by this tool")
     os.remove(path)
     print(f"deleted {path}")
 
@@ -185,11 +242,12 @@ def main():
         dh = read_delta_h(base_obs)
     except (ValueError, OSError) as e:
         fail(f"{e} - cannot read the base antenna height")
+    if dh <= 0.1 or dh > 3:
+        fail(f"DELTA H = {dh} m is implausible (expected ~1-2.5 m) - a 0 usually means "
+             "the antenna height was never entered in Emlid Flow. Refusing to guess.")
     if not (1.0 <= dh <= 2.5):
         print(f"  !! DELTA H = {dh} m is outside the usual 1.0-2.5 m - double-check "
               "the antenna height line in the base RINEX.")
-    if dh < 0 or dh > 3:
-        fail(f"DELTA H = {dh} m is implausible (expected ~1-2.5 m) - refusing to guess.")
 
     # --- original base position ---
     try:

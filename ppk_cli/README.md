@@ -20,6 +20,8 @@ flight (see [Validation](#validation)).
 - [Requirements & setup](#requirements--setup)
 - [Quick start](#quick-start)
 - [Command reference](#command-reference)
+- [CSRS-PPP base correction & GCP shift](#csrs-ppp-base-correction--gcp-shift)
+- [Running the tests](#running-the-tests)
 - [Input: what each flight folder needs](#input-what-each-flight-folder-needs)
 - [Output: what you get](#output-what-you-get)
 - [The config file explained](#the-config-file-explained)
@@ -110,6 +112,9 @@ RTKLIB).
 │   ├── ppk_pipeline.py     # the pipeline (run this)
 │   ├── compare_pos.py      # helper: compares two .pos files (used for validation)
 │   ├── compare_tags.py     # helper: compares two sets of tagged photos (testing only)
+│   ├── csrs.py             # CSRS-PPP helpers: .sum parser, DMS parser, antenna height
+│   ├── gcp_shift.py        # applies a CSRS-PPP base correction to Emlid GCPs
+│   ├── tests/              # pytest suite (synthetic data, no drone data needed)
 │   ├── configs/
 │   │   └── iter02.conf     # the validated processing recipe (config template)
 │   ├── bin/                # drop rnx2rtkp.exe here — auto-detected (git-ignored)
@@ -156,6 +161,8 @@ python ppk_pipeline.py <flight_dir> [<flight_dir2> ...] --base <base_dir> [--min
 | `<flight_dir>` | One DJI flight folder (images + `_D.OBS/.NAV/.MRK`). **Required, one or more.** |
 | `--base <base_dir>` | Folder with the base station's RINEX (`.yyO` + `.yyP`). **Required.** |
 | `--min-fix <pct>` | Warn (and exit non-zero) if a flight's FIX % is below this. Default `95`. |
+| `--csrs <report.sum>` | Replace the base's averaged position with the CSRS-PPP estimate from this report. See [CSRS-PPP base correction](#csrs-ppp-base-correction--gcp-shift). |
+| `--base-pos LAT LON ELLH` | Same, typed by hand (the CSRS **ground-marker** position; DMS or decimal). Wins over `--csrs`. |
 
 **Batch** = just list several flight folders. They must all share the **same
 base** (i.e. flown while that one base was logging):
@@ -188,6 +195,77 @@ anything outside `output/`.
 | `0` | All flights processed and all met `--min-fix`. |
 | `1` | A hard error (missing file, solver failed, count mismatch) — stops loudly. |
 | `2` | Finished, but at least one flight was below `--min-fix` — needs human review. |
+
+---
+
+## CSRS-PPP base correction & GCP shift
+
+The Emlid base averages its own position for 15-20 minutes, and that average can
+be ~1-2 m off. Every PPK position and every GCP measured against the base inherits
+that error. **CSRS-PPP** (Natural Resources Canada's free service) reprocesses the
+base's raw RINEX and returns its true position. These tools feed that position back in.
+
+**Manual step:** upload the base `.yyO` to CSRS-PPP and download the `.sum` report.
+Everything after that is automatic.
+
+### Correct the drone photos (this pipeline)
+
+```bash
+python ppk_pipeline.py "<flight>" --base "<base_folder>" --csrs report.sum
+```
+
+The base position in `flight.conf` switches from the RINEX header average
+(`ant2-postype=rinexhead`) to the CSRS position (`llh` + `ant2-pos1/2/3`). The
+antenna height is still added on top, so the **ground-marker** position is what
+goes in. The run refuses an override more than 100 m from the RINEX header (a typo
+or the wrong datum) and warns above 10 m.
+
+### Correct the GCPs + get the DJI Terra base point
+
+```bash
+python gcp_shift.py --gcp emlid_gcps.csv --base <base_folder> --csrs report.sum
+```
+
+It reads the original base position from the Emlid CSV's `Base ...` columns, the
+CSRS estimate from the `.sum`, and the antenna height from the base RINEX. Then it
+writes `gcp_corrected.csv` with every GCP shifted, and prints the base coordinate
+as a **marker** (for `--base-pos` above) and an **ARP** (marker + antenna height,
+for DJI Terra's "Enter Center Points").
+
+| Option | Meaning |
+|---|---|
+| `--csrs-pos LAT LON ELLH` | Type the CSRS estimate instead of reading a `.sum` (quote DMS values). |
+| `--base-pos LAT LON ELLH` | Override the original base position instead of reading it from the CSV. |
+| `--out <file>` | Output path (default `gcp_corrected.csv`). |
+| `--force` | Write even if the shift exceeds the 20 m sanity limit. |
+| `clean [file]` | Delete a `gcp_corrected*.csv` (refuses any other file). |
+
+**It stops rather than guess** when:
+- the report only has a NAD83(CSRS) solution, or its columns don't match its own difference column,
+- any GCP row has a blank or non-numeric coordinate,
+- the CSV mixes base positions,
+- the antenna height is 0 or missing,
+- the shift exceeds 20 m.
+
+> **Open question - GCP heights.** The vertical shift copies the original HTML
+> calculator: `(CSRS height + antenna height) - CSV base height`. That is right only
+> if Emlid's `Base ellipsoidal height` column is the **antenna** height. If it is the
+> **ground-marker** height, every corrected GCP is ~1.8 m too high (in the HTML tool
+> as well). Confirm against a real export before relying on GCP heights.
+
+---
+
+## Running the tests
+
+```bash
+pip install pytest
+python -m pytest ppk_cli/tests -v
+```
+
+The suite (59 tests, about 2 seconds) builds its own tiny RINEX headers, `.sum`
+reports and CSVs, so it needs no drone data and no RTKLIB. It covers coordinate
+parsing, `.sum` parsing (including NAD83-first and misaligned reports), the GCP shift
+and its safety stops, and the config built for the base override.
 
 ---
 

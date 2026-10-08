@@ -197,15 +197,21 @@ def build_config(base_obs, out_conf, base_pos=None):
         _check_base_pos(base_pos, base_obs)
 
     out = []
-    postype_replaced = 0
+    postype_replaced = antdelu_replaced = 0
     with open(TEMPLATE) as f:
         for line in f:
             if line.startswith("ant2-antdelu"):
                 line = f"ant2-antdelu       ={antdelu:.4f}   # {delta_h} pole + {RS4_APC_L1_M} RS4 L1 APC\n"
+                antdelu_replaced += 1
             elif base_pos and line.startswith("ant2-postype"):
                 line = "ant2-postype       =llh        # overridden with the CSRS-corrected base marker\n"
                 postype_replaced += 1
             out.append(line)
+    # without exactly one antdelu line the solver would silently use the template's
+    # antenna height (wrong for any other tripod setup -> a vertical error)
+    if antdelu_replaced != 1:
+        fail(f"config template {TEMPLATE} has {antdelu_replaced} 'ant2-antdelu' lines "
+             "(expected 1) - cannot set the base antenna height safely")
     if base_pos:
         # without exactly one ant2-postype=llh, RTKLIB would silently ignore ant2-pos*
         if postype_replaced != 1:
@@ -301,6 +307,16 @@ def _obs_window(obs_path):
 
 PROGRESS_RE = re.compile(
     r"processing\s*:\s*(\d{4})/(\d{2})/(\d{2}) (\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)\s+Q=(\d)")
+
+
+def _remove_stale_solution(out_dir):
+    """Delete solution files left by a previous run of this flight. If rnx2rtkp
+    ever wrote no events this time, report() would otherwise read the OLD events
+    file and tag photos with positions from an earlier config or base override."""
+    for name in ("solution.pos", "solution_events.pos"):
+        path = os.path.join(out_dir, name)
+        if os.path.exists(path):
+            os.remove(path)
 
 
 def solve(conf, rover_obs, base_obs, rover_nav, base_nav, out_pos):
@@ -487,6 +503,7 @@ def run_flight(idx, total, flight_dir, base_dir, min_fix, base_pos=None):
     print(f"  events   : {n_ev} shutter marks injected from MRK")
 
     out_pos = os.path.join(out_dir, "solution.pos")
+    _remove_stale_solution(out_dir)
     solve(conf, obs_ev, files["base_obs"], files["nav"], files["base_nav"], out_pos)
 
     events, fix_pct, ev_fix_pct = report(

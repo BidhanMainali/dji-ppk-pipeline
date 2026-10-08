@@ -176,9 +176,12 @@ def _scalar_pair(rest, label):
 
 def _check_diff(label, computed_m, reported_m):
     """The report prints 'estimated - a priori' in metres. If our own difference
-    disagrees, the columns were read from the wrong positions."""
+    disagrees, the columns were read from the wrong positions. A missing diff
+    column means the layout changed - exactly the case this check exists for -
+    so that fails too rather than silently skipping the check."""
     if reported_m is None:
-        return
+        raise ValueError(f"{label}: no 'estimated - a priori' column to cross-check "
+                         "against - the report layout looks different from expected")
     if abs(computed_m - reported_m) > 0.01 + 0.005 * abs(reported_m):
         raise ValueError(
             f"{label}: estimated - a-priori is {computed_m:+.4f} m from the parsed "
@@ -228,6 +231,11 @@ def parse_sum(path):
             reason = "no complete LAT/LON/HGT block in a global ITRF/IGS frame."
         raise ValueError(f"{path}: {reason} Frames seen: {frames}. Use --csrs-pos "
                          "to enter the position manually if this is the right file.")
+    if len(usable) > 1:
+        which = ", ".join(f"{k[0]} @ {k[1]}" for k, _ in usable)
+        raise ValueError(f"{path}: more than one global solution block ({which}) - "
+                         "ambiguous which to use. Use --csrs-pos to enter the "
+                         "position manually.")
     (datum, epoch), lines = usable[0]
 
     try:
