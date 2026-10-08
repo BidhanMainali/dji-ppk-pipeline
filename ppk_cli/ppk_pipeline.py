@@ -23,6 +23,7 @@ Originals are never modified; everything lands in ppk_cli\\output\\<flight>\\.
 
 import argparse
 import glob
+import math
 import os
 import re
 import shutil
@@ -34,7 +35,7 @@ from fractions import Fraction
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 from compare_pos import parse_pos, QNAME          # noqa: E402  (same dir)
 from parse_mrk import parse_mrk_file              # noqa: E402  (scripts dir)
-from csrs import parse_sum, parse_latlon, read_delta_h  # noqa: E402  (same dir)
+from csrs import parse_sum, parse_llh, read_delta_h  # noqa: E402  (same dir)
 
 # Last-resort fallback path (this machine's install). Users normally don't touch
 # this — the solver is located automatically by _find_rnx2rtkp() (see below).
@@ -128,7 +129,6 @@ def discover(flight_dir, base_dir):
 
 def _llh_to_ecef(lat, lon, h):
     """WGS84 geographic (deg, deg, m) -> ECEF (X, Y, Z) metres."""
-    import math
     a, f = 6378137.0, 1 / 298.257223563
     e2 = f * (2 - f)
     la, lo = math.radians(lat), math.radians(lon)
@@ -139,29 +139,41 @@ def _llh_to_ecef(lat, lon, h):
 
 
 def _rinex_approx_xyz(base_obs):
-    """Read 'APPROX POSITION XYZ' (ECEF metres) from a RINEX header, or None."""
-    with open(base_obs, errors="replace") as f:
+    """Read 'APPROX POSITION XYZ' (ECEF metres) from a RINEX header.
+
+    Returns None when the line is missing, blank/unreadable, or all zeros
+    (converted RINEX often writes 0 0 0) - i.e. whenever there is no real
+    position to compare against."""
+    with open(base_obs, encoding="ascii", errors="replace") as f:
         for line in f:
-            if line[60:].strip() == "APPROX POSITION XYZ":
-                return tuple(float(line[i:i + 14]) for i in (0, 14, 28))
-            if line[60:].strip() == "END OF HEADER":
+            label = line[60:].strip()
+            if label == "APPROX POSITION XYZ":
+                try:
+                    xyz = tuple(float(line[i:i + 14]) for i in (0, 14, 28))
+                except ValueError:
+                    return None
+                # a real position is ~6.4e6 m from the Earth's centre
+                return xyz if math.dist(xyz, (0.0, 0.0, 0.0)) > 1e6 else None
+            if label == "END OF HEADER":
                 break
     return None
 
 
 def _check_base_pos(base_pos, base_obs):
-    """Cross-check a base override against the RINEX-header position. A few metres
-    is expected (antenna height + the CSRS correction); a large gap means a typo
-    or the wrong datum. Warn > 5 m, hard-fail > 100 m."""
-    import math
+    """Cross-check a base override against the RINEX-header position. Several
+    metres is expected (antenna height + the CSRS correction, and the header is
+    often only a single-point fix); a large gap means a typo or the wrong datum.
+    Warn > 10 m, hard-fail > 100 m."""
     approx = _rinex_approx_xyz(base_obs)
-    if not approx:
-        return  # header has no approx position — nothing to compare against
+    if approx is None:
+        print("  note     : base RINEX header has no usable approx position - "
+              "skipping the base-override sanity check")
+        return
     d = math.dist(_llh_to_ecef(*base_pos), approx)
     if d > 100:
         fail(f"base override is {d:.1f} m from the RINEX-header position - almost "
              "certainly a typo or the wrong datum. Refusing to run.")
-    if d > 5:
+    if d > 10:
         print(f"  !! base override is {d:.1f} m from the RINEX-header position - "
               "expected a few m (antenna height + CSRS correction); double-check it.")
 
@@ -185,13 +197,20 @@ def build_config(base_obs, out_conf, base_pos=None):
         _check_base_pos(base_pos, base_obs)
 
     out = []
-    for line in open(TEMPLATE):
-        if line.startswith("ant2-antdelu"):
-            line = f"ant2-antdelu       ={antdelu:.4f}   # {delta_h} pole + {RS4_APC_L1_M} RS4 L1 APC\n"
-        elif base_pos and line.startswith("ant2-postype"):
-            line = "ant2-postype       =llh        # overridden with the CSRS-corrected base marker\n"
-        out.append(line)
+    postype_replaced = 0
+    with open(TEMPLATE) as f:
+        for line in f:
+            if line.startswith("ant2-antdelu"):
+                line = f"ant2-antdelu       ={antdelu:.4f}   # {delta_h} pole + {RS4_APC_L1_M} RS4 L1 APC\n"
+            elif base_pos and line.startswith("ant2-postype"):
+                line = "ant2-postype       =llh        # overridden with the CSRS-corrected base marker\n"
+                postype_replaced += 1
+            out.append(line)
     if base_pos:
+        # without exactly one ant2-postype=llh, RTKLIB would silently ignore ant2-pos*
+        if postype_replaced != 1:
+            fail(f"config template {TEMPLATE} has {postype_replaced} 'ant2-postype' lines "
+                 "(expected 1) - cannot apply the base-position override safely")
         lat, lon, ellh = base_pos
         out.append(f"ant2-pos1          ={lat:.9f}    # base marker latitude (CSRS-PPP)\n")
         out.append(f"ant2-pos2          ={lon:.9f}   # base marker longitude (CSRS-PPP)\n")
@@ -227,7 +246,7 @@ def inject_events(obs_in, mrk_records, obs_out):
     inserted in chronological order among the observation epochs."""
     events = [_sow_to_gpst(r["gps_week"], r["gps_sow"]) for r in mrk_records]
     if events != sorted(events):
-        fail("MRK timestamps are not in chronological order — refusing to inject")
+        fail("MRK timestamps are not in chronological order - refusing to inject")
     pending = list(events)
     inserted = 0
 
@@ -359,10 +378,10 @@ def report(out_pos, events_pos, n_photos, report_path):
     lines = []
     _, fix_pct = _breakdown(out_pos, "Solution", lines)
     if not os.path.exists(events_pos) or os.path.getsize(events_pos) == 0:
-        fail(f"no event positions at {events_pos} — event injection failed?")
+        fail(f"no event positions at {events_pos} - event injection failed?")
     events, ev_fix_pct = _breakdown(events_pos, "Events", lines)
     if len(events) != n_photos:
-        fail(f"{len(events)} event positions but {n_photos} photos — refusing to tag")
+        fail(f"{len(events)} event positions but {n_photos} photos - refusing to tag")
     with open(report_path, "w") as f:
         f.write("\n".join(lines) + "\n")
     return events, fix_pct, ev_fix_pct
@@ -385,7 +404,6 @@ def _antenna_to_camera(lat, lon, hgt, rec):
     center, N/E/V-down in mm) — the same correction Emlid Studio applies to
     its event positions (verified: ES events = antenna events + this offset,
     residual ~0.5 cm on the reference flight)."""
-    import math
     lat += (rec["lever_n_mm"] / 1000.0) / 111132.95
     lon += (rec["lever_e_mm"] / 1000.0) / (111319.49 * math.cos(math.radians(lat)))
     hgt -= rec["lever_v_mm"] / 1000.0
@@ -403,7 +421,7 @@ def tag_photos(events, mrk_records, jpg_by_id, tagged_dir, csv_path):
     os.makedirs(tagged_dir, exist_ok=True)
     ev_list = [events[t] for t in sorted(events)]
     if len(ev_list) != len(mrk_records):
-        fail(f"{len(ev_list)} events vs {len(mrk_records)} MRK rows — cannot pair")
+        fail(f"{len(ev_list)} events vs {len(mrk_records)} MRK rows - cannot pair")
 
     n = 0
     csv_rows = []
@@ -486,7 +504,7 @@ def run_flight(idx, total, flight_dir, base_dir, min_fix, base_pos=None):
 
     ok = fix_pct >= min_fix
     if not ok:
-        print(f"  !! WARNING: FIX {fix_pct:.2f}% is below --min-fix {min_fix}% — needs human review")
+        print(f"  !! WARNING: FIX {fix_pct:.2f}% is below --min-fix {min_fix}% - needs human review")
     return {"name": name, "fix": fix_pct, "ev_fix": ev_fix_pct,
             "events": len(events), "tagged": n_tag, "ok": ok}
 
@@ -496,7 +514,7 @@ def clean(target=None):
     name, delete just that flight's folder; without, delete all of output/."""
     path = os.path.join(OUT_ROOT, target) if target else OUT_ROOT
     if not os.path.isdir(path):
-        print(f"{path} already gone — nothing to clean")
+        print(f"{path} already gone - nothing to clean")
         return
     if os.path.commonpath([OUT_ROOT, os.path.abspath(path)]) != OUT_ROOT:
         fail(f"refusing to delete outside {OUT_ROOT}")
@@ -532,16 +550,18 @@ def main():
     # build_config, which writes ant2-postype=llh + ant2-pos1/2/3. Without any of
     # these flags, behaviour is identical to before (ant2-postype=rinexhead).
     base_pos = None
-    if args.base_pos:
-        base_pos = (parse_latlon(args.base_pos[0]), parse_latlon(args.base_pos[1]),
-                    float(args.base_pos[2]))
-        print(f"base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
-              "(manual override)")
-    elif args.csrs:
-        r = parse_sum(args.csrs)
-        base_pos = (r.lat, r.lon, r.ellh)
-        print(f"base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
-              f"(CSRS-PPP {r.datum} {r.epoch or ''})")
+    try:
+        if args.base_pos:
+            base_pos = parse_llh(*args.base_pos)
+            print(f"base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
+                  "(manual override)")
+        elif args.csrs:
+            r = parse_sum(args.csrs)
+            base_pos = (r.lat, r.lon, r.ellh)
+            print(f"base pos : {base_pos[0]:.8f}, {base_pos[1]:.8f}, {base_pos[2]:.3f} m "
+                  f"(CSRS-PPP {r.datum} {r.epoch or ''})")
+    except (ValueError, OSError) as e:
+        fail(f"could not read the base-position override: {e}")
 
     global RNX2RTKP
     RNX2RTKP = _find_rnx2rtkp(args.rnx2rtkp)

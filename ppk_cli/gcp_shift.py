@@ -21,6 +21,7 @@ Given an Emlid Flow GCP CSV, the base RINEX, and a CSRS-PPP result, this tool:
 Usage:
   python gcp_shift.py --gcp <emlid.csv> --base <baseRINEXfolder|.yyO> \\
       (--csrs <report.sum> | --csrs-pos <lat> <lon> <ellh>) [--out gcp_corrected.csv]
+      [--force]   (write even if the shift exceeds the 20 m sanity limit)
   python gcp_shift.py clean [path]      delete a previously written corrected
                                         CSV (default: ./gcp_corrected.csv)
 
@@ -34,13 +35,17 @@ import math
 import os
 import sys
 
-from csrs import parse_latlon, parse_sum, read_delta_h
+from csrs import parse_llh, parse_sum, read_delta_h
 
 # Emlid Flow GCP CSV column headers (as the HTML calculator expects them).
 COL_LON, COL_LAT, COL_H = "Longitude", "Latitude", "Ellipsoidal height"
 COL_BLON, COL_BLAT, COL_BH = "Base longitude", "Base latitude", "Base ellipsoidal height"
 COL_CS = "CS name"
 DEFAULT_OUT = "gcp_corrected.csv"
+
+# A real base correction is ~1-2 m. Anything this large is almost certainly a
+# typo, a sign error or the wrong CSRS run, so refuse to write unless --force.
+MAX_SHIFT_M = 20.0
 
 
 def fail(msg):
@@ -79,6 +84,12 @@ def compute_shift(base_pos, csrs_pos, dh):
       terraH = ph + dh           (ARP = mark + antenna height; DJI Terra wants this)
       shift  = CSRS_true - original_base
     The metre figures (mN/mE) are display/warning only, using the tool's constants.
+
+    OPEN QUESTION (kept identical to the HTML tool on purpose): the vertical shift
+    is du = (ph + dh) - bh, i.e. it treats the CSV's 'Base ellipsoidal height' as
+    the antenna (ARP) height. If Emlid Flow actually writes the ground-marker
+    height in that column, the correct shift is du = ph - bh and this adds DELTA H
+    (~1.8 m) to every GCP. Confirm against a real export before relying on heights.
     """
     blat, blon, bh = base_pos
     plat, plon, ph = csrs_pos
@@ -149,25 +160,31 @@ def main():
     ap.add_argument("--base-pos", nargs=3, metavar=("LAT", "LON", "ELLH"),
                     help="override the original base position (else read from the CSV)")
     ap.add_argument("--out", default=DEFAULT_OUT, help="output CSV path")
+    ap.add_argument("--force", action="store_true",
+                    help=f"write the CSV even if the shift exceeds {MAX_SHIFT_M:.0f} m")
     args = ap.parse_args()
 
     if not args.csrs and not args.csrs_pos:
         fail("provide the CSRS estimate: --csrs <report.sum> or --csrs-pos LAT LON ELLH")
 
     # --- CSRS estimated position (the true base = ground marker) ---
-    if args.csrs_pos:
-        plat = parse_latlon(args.csrs_pos[0])
-        plon = parse_latlon(args.csrs_pos[1])
-        ph = float(args.csrs_pos[2])
-        csrs_src = "manual (--csrs-pos)"
-    else:
-        res = parse_sum(args.csrs)
-        plat, plon, ph = res.lat, res.lon, res.ellh
-        csrs_src = f"{args.csrs} ({res.datum} {res.epoch or ''})".strip()
+    try:
+        if args.csrs_pos:
+            plat, plon, ph = parse_llh(*args.csrs_pos)
+            csrs_src = "manual (--csrs-pos)"
+        else:
+            res = parse_sum(args.csrs)
+            plat, plon, ph = res.lat, res.lon, res.ellh
+            csrs_src = f"{args.csrs} ({res.datum} {res.epoch or ''})".strip()
+    except (ValueError, OSError) as e:
+        fail(f"could not read the CSRS estimate: {e}")
 
     # --- DELTA H from the base RINEX ---
     base_obs = find_base_obs(args.base)
-    dh = read_delta_h(base_obs)
+    try:
+        dh = read_delta_h(base_obs)
+    except (ValueError, OSError) as e:
+        fail(f"{e} - cannot read the base antenna height")
     if not (1.0 <= dh <= 2.5):
         print(f"  !! DELTA H = {dh} m is outside the usual 1.0-2.5 m - double-check "
               "the antenna height line in the base RINEX.")
@@ -175,13 +192,18 @@ def main():
         fail(f"DELTA H = {dh} m is implausible (expected ~1-2.5 m) - refusing to guess.")
 
     # --- original base position ---
-    with open(args.gcp, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        rows = list(reader)
+    try:
+        with open(args.gcp, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            rows = list(reader)
+    except OSError as e:
+        fail(f"could not read the GCP CSV: {e}")
     if args.base_pos:
-        base_pos = (parse_latlon(args.base_pos[0]), parse_latlon(args.base_pos[1]),
-                    float(args.base_pos[2]))
+        try:
+            base_pos = parse_llh(*args.base_pos)
+        except ValueError as e:
+            fail(f"bad --base-pos: {e}")
     else:
         base_pos = read_base_pos_from_csv(rows)
 
@@ -198,7 +220,15 @@ def main():
           f"{shift['plat']:.8f} {shift['plon']:.8f} {shift['marker']:.3f}")
     print(f"  ARP    (DJI Terra Center Point) : "
           f"{shift['plat']:.8f} {shift['plon']:.8f} {shift['terra_h']:.3f}")
-    if abs(shift["m_n"]) > 3 or abs(shift["m_e"]) > 3 or abs(shift["du"]) > 4:
+    horiz = math.hypot(shift["m_n"], shift["m_e"])
+    if horiz > MAX_SHIFT_M or abs(shift["du"]) > MAX_SHIFT_M:
+        msg = (f"shift of {horiz:.1f} m horizontal / {shift['du']:+.1f} m vertical is "
+               f"far beyond a normal base correction (limit {MAX_SHIFT_M:.0f} m) - "
+               "almost certainly a typo, a sign error or the wrong CSRS run (NAD83?).")
+        if not args.force:
+            fail(msg + " Nothing written. Re-run with --force only if you are sure.")
+        print(f"\n  !! {msg} Writing anyway because of --force.")
+    elif abs(shift["m_n"]) > 3 or abs(shift["m_e"]) > 3 or abs(shift["du"]) > 4:
         print("\n  !! Shift is unusually large (>3 m). Check the inputs - the CSRS-PPP "
               "result must be the ITRF2020 run, not NAD83.")
 
