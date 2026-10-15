@@ -189,10 +189,14 @@ def fix_csv(rows, fieldnames, shift, out_path):
         if COL_CS in fieldnames:
             r[COL_CS] = "Global CS (ITRF2020)"
         n += 1
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows)
+    try:
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(rows)
+    except PermissionError:
+        fail(f"can't write {out_path} - it's open in another program (Excel?). "
+             "Close it and run again.")
     return n
 
 
@@ -209,7 +213,11 @@ def clean(target=None):
     if not (name.startswith("gcp_corrected") and name.endswith(".csv")) or os.path.islink(path):
         fail(f"refusing to delete {path}: clean only removes gcp_corrected*.csv files "
              "written by this tool")
-    os.remove(path)
+    try:
+        os.remove(path)
+    except PermissionError:
+        fail(f"can't delete {path} - it's open in another program (Excel?). "
+             "Close it and run clean again.")
     print(f"deleted {path}")
 
 
