@@ -26,6 +26,13 @@ SUM_NAD83 = (SUM_GLOBAL.replace("IGc20", "NAD83(CSRS)")
              .replace("36.82477", "36.80000").replace("-2.7717", "-3.4775"))
 
 
+@pytest.fixture(autouse=True)
+def _no_nested_self_tests(monkeypatch):
+    """gcp_shift.py runs this suite before processing; tests that run it (in
+    process or as a subprocess) must never start the suite again."""
+    monkeypatch.setenv("GCP_SHIFT_SKIP_TESTS", "1")
+
+
 def _header_line(content, label):
     """One RINEX header line: content in columns 1-60, label from column 61."""
     return f"{content:<60}{label}\n"

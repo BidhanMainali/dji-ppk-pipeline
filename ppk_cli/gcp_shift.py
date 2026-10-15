@@ -22,8 +22,13 @@ Usage:
   python gcp_shift.py --gcp <emlid.csv> --base <baseRINEXfolder|.yyO> \\
       (--csrs <report.sum> | --csrs-pos <lat> <lon> <ellh>) [--out gcp_corrected.csv]
       [--force]   (write even if the shift exceeds the 20 m sanity limit)
+      [--skip-tests]  (don't run the tests/ suite first - see below)
   python gcp_shift.py clean [path]      delete a previously written corrected
                                         CSV (default: ./gcp_corrected.csv)
+
+Before touching any data, the tool runs the pytest suite in tests/ and stops if
+anything fails, so a broken parser or shift formula can never write a corrected
+CSV. Needs `pip install pytest`; --skip-tests bypasses it.
 
 Notes: --csrs-pos lat/lon accept DMS (quote them, e.g. "49 56 38.8") or decimal.
 """
@@ -31,8 +36,10 @@ Notes: --csrs-pos lat/lon accept DMS (quote them, e.g. "49 56 38.8") or decimal.
 import argparse
 import csv
 import glob
+import importlib.util
 import math
 import os
+import subprocess
 import sys
 
 from csrs import parse_llh, parse_sum, read_delta_h
@@ -46,6 +53,10 @@ DEFAULT_OUT = "gcp_corrected.csv"
 # A real base correction is ~1-2 m. Anything this large is almost certainly a
 # typo, a sign error or the wrong CSRS run, so refuse to write unless --force.
 MAX_SHIFT_M = 20.0
+
+TESTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests")
+# set while the suite runs, so tests that run this script don't start it again
+SKIP_TESTS_ENV = "GCP_SHIFT_SKIP_TESTS"
 
 
 def fail(msg):
@@ -202,6 +213,21 @@ def clean(target=None):
     print(f"deleted {path}")
 
 
+def run_self_tests():
+    """Run the pytest suite in tests/ and stop (exit 1) unless every test passes.
+    Runs in a separate process so test state never leaks into the real run."""
+    if importlib.util.find_spec("pytest") is None:
+        fail("pytest is not installed - run `pip install pytest`, or pass "
+             "--skip-tests to run without the self-tests.")
+    print(f"running self-tests ({TESTS_DIR}) ...")
+    env = dict(os.environ, **{SKIP_TESTS_ENV: "1"})
+    result = subprocess.run([sys.executable, "-m", "pytest", TESTS_DIR, "-q"], env=env)
+    if result.returncode != 0:
+        fail("self-tests failed - nothing was processed. Fix the failures above "
+             "(or pass --skip-tests if you really must run anyway).")
+    print("self-tests passed\n")
+
+
 def main():
     # `python gcp_shift.py clean [path]` -> delete the corrected CSV and stop
     if len(sys.argv) > 1 and sys.argv[1] == "clean":
@@ -219,7 +245,12 @@ def main():
     ap.add_argument("--out", default=DEFAULT_OUT, help="output CSV path")
     ap.add_argument("--force", action="store_true",
                     help=f"write the CSV even if the shift exceeds {MAX_SHIFT_M:.0f} m")
+    ap.add_argument("--skip-tests", action="store_true",
+                    help="don't run the tests/ suite before processing")
     args = ap.parse_args()
+
+    if not args.skip_tests and not os.environ.get(SKIP_TESTS_ENV):
+        run_self_tests()
 
     if not args.csrs and not args.csrs_pos:
         fail("provide the CSRS estimate: --csrs <report.sum> or --csrs-pos LAT LON ELLH")

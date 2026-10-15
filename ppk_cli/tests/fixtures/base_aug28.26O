@@ -1,0 +1,26 @@
+     3.03           OBSERVATION DATA    M: Mixed            RINEX VERSION / TYPE
+Emlid RGL 1.2.8                         20260829 021501 UTC PGM / RUN BY / DATE 
+format: u-blox, option: -TADJ=0.1                           COMMENT             
+                                                            MARKER NAME         
+                                                            MARKER NUMBER       
+                                                            MARKER TYPE         
+                                                            OBSERVER / AGENCY   
+                    EMLID REACH RS4                         REC # / TYPE / VERS 
+                    EML_REACH_RS4   NONE                    ANT # / TYPE        
+ -2487916.5205 -3274818.0336  4858770.3091                  APPROX POSITION XYZ 
+        1.1300        0.0000        0.0000                  ANTENNA: DELTA H/E/N
+G    8 C1C L1C D1C S1C C2X L2X D2X S2X                      SYS / # / OBS TYPES 
+R    8 C1C L1C D1C S1C C2C L2C D2C S2C                      SYS / # / OBS TYPES 
+E    8 C1X L1X D1X S1X C7X L7X D7X S7X                      SYS / # / OBS TYPES 
+J    8 C1C L1C D1C S1C C2X L2X D2X S2X                      SYS / # / OBS TYPES 
+C    8 C2I L2I D2I S2I C7I L7I D7I S7I                      SYS / # / OBS TYPES 
+  2026     8    28    19    53   57.2000000     GPS         TIME OF FIRST OBS   
+  2026     8    29     2    15   19.4000000     GPS         TIME OF LAST OBS    
+G                                                           SYS / PHASE SHIFT   
+R                                                           SYS / PHASE SHIFT   
+E                                                           SYS / PHASE SHIFT   
+J                                                           SYS / PHASE SHIFT   
+C                                                           SYS / PHASE SHIFT   
+  0                                                         GLONASS SLOT / FRQ #
+ C1C    0.000 C1P    0.000 C2C    0.000 C2P    0.000        GLONASS COD/PHS/BIS 
+                                                            END OF HEADER       
